@@ -5,76 +5,21 @@
  * Copyright(c) 2018 Souta Kawahara
  * Copyright(c) 2018 Hiroki Shirokura
  */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdint.h>
-#include <inttypes.h>
-#include <sys/types.h>
-#include <sys/queue.h>
-#include <netinet/in.h>
-#include <setjmp.h>
-#include <stdarg.h>
-#include <ctype.h>
-#include <errno.h>
-#include <getopt.h>
-#include <signal.h>
-#include <stdbool.h>
-
-#include <rte_common.h>
-#include <rte_log.h>
-#include <rte_malloc.h>
-#include <rte_memory.h>
-#include <rte_memcpy.h>
-#include <rte_memzone.h>
-#include <rte_eal.h>
-#include <rte_launch.h>
-#include <rte_atomic.h>
-#include <rte_cycles.h>
-#include <rte_prefetch.h>
-#include <rte_lcore.h>
-#include <rte_per_lcore.h>
-#include <rte_branch_prediction.h>
-#include <rte_interrupts.h>
-#include <rte_pci.h>
-#include <rte_random.h>
-#include <rte_debug.h>
-#include <rte_ether.h>
-#include <rte_ethdev.h>
-#include <rte_mempool.h>
-#include <rte_mbuf.h>
+#include "xellico.h"
 
 static volatile bool force_quit;
-
-/* MAC updating enabled by default */
-static int mac_updating = 1;
-
 #define RTE_LOGTYPE_L2FWD RTE_LOGTYPE_USER1
-
 #define NB_MBUF   8192
-
 #define MAX_PKT_BURST 32
 #define BURST_TX_DRAIN_US 100 /* TX drain every ~100us */
 #define MEMPOOL_CACHE_SIZE 256
-
-/*
- * Configurable number of RX/TX ring descriptors
- */
-#define RTE_TEST_RX_DESC_DEFAULT 128
-#define RTE_TEST_TX_DESC_DEFAULT 512
-static uint16_t nb_rxd = RTE_TEST_RX_DESC_DEFAULT;
-static uint16_t nb_txd = RTE_TEST_TX_DESC_DEFAULT;
-
-/* ethernet addresses of ports */
-static struct ether_addr l2fwd_ports_eth_addr[RTE_MAX_ETHPORTS];
-
-/* mask of enabled ports */
-static uint32_t l2fwd_enabled_port_mask = 0;
-
-/* list of enabled ports */
+static uint16_t nb_rxd = 128;
+static uint16_t nb_txd = 512;
+static uint32_t l2fwd_enabled_port_mask = 0x3;
 static uint32_t l2fwd_dst_ports[RTE_MAX_ETHPORTS];
-
 static unsigned int l2fwd_rx_queue_per_lcore = 1;
 
 #define MAX_RX_QUEUE_PER_LCORE 16
@@ -95,9 +40,16 @@ static const struct rte_eth_conf port_conf = {
 		.hw_vlan_filter = 0, /**< VLAN filtering disabled */
 		.jumbo_frame    = 0, /**< Jumbo Frame Support disabled */
 		.hw_strip_crc   = 1, /**< CRC stripped by hardware */
+		.mq_mode = ETH_MQ_RX_RSS,
 	},
 	.txmode = {
 		.mq_mode = ETH_MQ_TX_NONE,
+	},
+	.rx_adv_conf = {
+		.rss_conf = {
+			.rss_key = NULL,
+			.rss_hf = ETH_RSS_IP|ETH_RSS_TCP|ETH_RSS_UDP,
+		},
 	},
 };
 
@@ -162,33 +114,12 @@ print_stats(void)
 }
 
 static void
-l2fwd_mac_updating(struct rte_mbuf *m, unsigned dest_portid)
-{
-	struct ether_hdr *eth;
-	void *tmp;
-
-	eth = rte_pktmbuf_mtod(m, struct ether_hdr *);
-
-	/* 02:00:00:00:00:xx */
-	tmp = &eth->d_addr.addr_bytes[0];
-	*((uint64_t *)tmp) = 0x000000000002 + ((uint64_t)dest_portid << 40);
-
-	/* src addr */
-	ether_addr_copy(&l2fwd_ports_eth_addr[dest_portid], &eth->s_addr);
-}
-
-static void
 l2fwd_simple_forward(struct rte_mbuf *m, unsigned portid)
 {
 	unsigned dst_port;
 	int sent;
 	struct rte_eth_dev_tx_buffer *buffer;
-
 	dst_port = l2fwd_dst_ports[portid];
-
-	if (mac_updating)
-		l2fwd_mac_updating(m, dst_port);
-
 	buffer = tx_buffer[dst_port];
 	sent = rte_eth_tx_buffer(dst_port, 0, buffer, m);
 	if (sent)
@@ -300,159 +231,6 @@ l2fwd_launch_one_lcore(__attribute__((unused)) void *dummy)
 	return 0;
 }
 
-/* display usage */
-static void
-l2fwd_usage(const char *prgname)
-{
-	printf("%s [EAL options] -- -p PORTMASK [-q NQ]\n"
-	       "  -p PORTMASK: hexadecimal bitmask of ports to configure\n"
-	       "  -q NQ: number of queue (=ports) per lcore (default is 1)\n"
-		   "  -T PERIOD: statistics will be refreshed each PERIOD seconds (0 to disable, 10 default, 86400 maximum)\n"
-		   "  --[no-]mac-updating: Enable or disable MAC addresses updating (enabled by default)\n"
-		   "      When enabled:\n"
-		   "       - The source MAC address is replaced by the TX port MAC address\n"
-		   "       - The destination MAC address is replaced by 02:00:00:00:00:TX_PORT_ID\n",
-	       prgname);
-}
-
-static int
-l2fwd_parse_portmask(const char *portmask)
-{
-	char *end = NULL;
-	unsigned long pm;
-
-	/* parse hexadecimal string */
-	pm = strtoul(portmask, &end, 16);
-	if ((portmask[0] == '\0') || (end == NULL) || (*end != '\0'))
-		return -1;
-
-	if (pm == 0)
-		return -1;
-
-	return pm;
-}
-
-static unsigned int
-l2fwd_parse_nqueue(const char *q_arg)
-{
-	char *end = NULL;
-	unsigned long n;
-
-	/* parse hexadecimal string */
-	n = strtoul(q_arg, &end, 10);
-	if ((q_arg[0] == '\0') || (end == NULL) || (*end != '\0'))
-		return 0;
-	if (n == 0)
-		return 0;
-	if (n >= MAX_RX_QUEUE_PER_LCORE)
-		return 0;
-
-	return n;
-}
-
-static int
-l2fwd_parse_timer_period(const char *q_arg)
-{
-	char *end = NULL;
-	int n;
-
-	/* parse number string */
-	n = strtol(q_arg, &end, 10);
-	if ((q_arg[0] == '\0') || (end == NULL) || (*end != '\0'))
-		return -1;
-	if (n >= MAX_TIMER_PERIOD)
-		return -1;
-
-	return n;
-}
-
-static const char short_options[] =
-	"p:"  /* portmask */
-	"q:"  /* number of queues */
-	"T:"  /* timer period */
-	;
-
-#define CMD_LINE_OPT_MAC_UPDATING "mac-updating"
-#define CMD_LINE_OPT_NO_MAC_UPDATING "no-mac-updating"
-
-enum {
-	/* long options mapped to a short option */
-
-	/* first long only option value must be >= 256, so that we won't
-	 * conflict with short options */
-	CMD_LINE_OPT_MIN_NUM = 256,
-};
-
-static const struct option lgopts[] = {
-	{ CMD_LINE_OPT_MAC_UPDATING, no_argument, &mac_updating, 1},
-	{ CMD_LINE_OPT_NO_MAC_UPDATING, no_argument, &mac_updating, 0},
-	{NULL, 0, 0, 0}
-};
-
-/* Parse the argument given in the command line of the application */
-static int
-l2fwd_parse_args(int argc, char **argv)
-{
-	int opt, ret, timer_secs;
-	char **argvopt;
-	int option_index;
-	char *prgname = argv[0];
-
-	argvopt = argv;
-
-	while ((opt = getopt_long(argc, argvopt, short_options,
-				  lgopts, &option_index)) != EOF) {
-
-		switch (opt) {
-		/* portmask */
-		case 'p':
-			l2fwd_enabled_port_mask = l2fwd_parse_portmask(optarg);
-			if (l2fwd_enabled_port_mask == 0) {
-				printf("invalid portmask\n");
-				l2fwd_usage(prgname);
-				return -1;
-			}
-			break;
-
-		/* nqueue */
-		case 'q':
-			l2fwd_rx_queue_per_lcore = l2fwd_parse_nqueue(optarg);
-			if (l2fwd_rx_queue_per_lcore == 0) {
-				printf("invalid queue number\n");
-				l2fwd_usage(prgname);
-				return -1;
-			}
-			break;
-
-		/* timer period */
-		case 'T':
-			timer_secs = l2fwd_parse_timer_period(optarg);
-			if (timer_secs < 0) {
-				printf("invalid timer period\n");
-				l2fwd_usage(prgname);
-				return -1;
-			}
-			timer_period = timer_secs;
-			break;
-
-		/* long options */
-		case 0:
-			break;
-
-		default:
-			l2fwd_usage(prgname);
-			return -1;
-		}
-	}
-
-	if (optind >= 0)
-		argv[optind-1] = prgname;
-
-	ret = optind-1;
-	optind = 1; /* reset getopt lib */
-	return ret;
-}
-
 /* Check the link status of all ports in up to 9s, and print them finally */
 static void
 check_all_ports_link_status(uint8_t port_num, uint32_t port_mask)
@@ -545,13 +323,6 @@ main(int argc, char **argv)
 	signal(SIGINT, signal_handler);
 	signal(SIGTERM, signal_handler);
 
-	/* parse application arguments (after the EAL ones) */
-	ret = l2fwd_parse_args(argc, argv);
-	if (ret < 0)
-		rte_exit(EXIT_FAILURE, "Invalid L2FWD arguments\n");
-
-	printf("MAC updating %s\n", mac_updating ? "enabled" : "disabled");
-
 	/* convert to number of cycles */
 	timer_period *= rte_get_timer_hz();
 
@@ -624,15 +395,14 @@ main(int argc, char **argv)
 
 	nb_ports_available = nb_ports;
 
-	/* Initialise each port */
 	for (portid = 0; portid < nb_ports; portid++) {
-		/* skip ports that are not enabled */
+
 		if ((l2fwd_enabled_port_mask & (1 << portid)) == 0) {
 			printf("Skipping disabled port %u\n", (unsigned) portid);
 			nb_ports_available--;
 			continue;
 		}
-		/* init port */
+
 		printf("Initializing port %u... ", (unsigned) portid);
 		fflush(stdout);
 		ret = rte_eth_dev_configure(portid, 1, 1, &port_conf);
@@ -640,21 +410,17 @@ main(int argc, char **argv)
 			rte_exit(EXIT_FAILURE, "Cannot configure device: err=%d, port=%u\n",
 				  ret, (unsigned) portid);
 
-		ret = rte_eth_dev_adjust_nb_rx_tx_desc(portid, &nb_rxd,
-						       &nb_txd);
+		ret = rte_eth_dev_adjust_nb_rx_tx_desc(portid, &nb_rxd, &nb_txd);
 		if (ret < 0)
 			rte_exit(EXIT_FAILURE,
 				 "Cannot adjust number of descriptors: err=%d, port=%u\n",
 				 ret, (unsigned) portid);
 
-		rte_eth_macaddr_get(portid,&l2fwd_ports_eth_addr[portid]);
-
 		/* init one RX queue */
 		fflush(stdout);
 		ret = rte_eth_rx_queue_setup(portid, 0, nb_rxd,
 					     rte_eth_dev_socket_id(portid),
-					     NULL,
-					     l2fwd_pktmbuf_pool);
+					     NULL, l2fwd_pktmbuf_pool);
 		if (ret < 0)
 			rte_exit(EXIT_FAILURE, "rte_eth_rx_queue_setup:err=%d, port=%u\n",
 				  ret, (unsigned) portid);
@@ -662,8 +428,7 @@ main(int argc, char **argv)
 		/* init one TX queue on each port */
 		fflush(stdout);
 		ret = rte_eth_tx_queue_setup(portid, 0, nb_txd,
-				rte_eth_dev_socket_id(portid),
-				NULL);
+				rte_eth_dev_socket_id(portid), NULL);
 		if (ret < 0)
 			rte_exit(EXIT_FAILURE, "rte_eth_tx_queue_setup:err=%d, port=%u\n",
 				ret, (unsigned) portid);
@@ -675,7 +440,6 @@ main(int argc, char **argv)
 		if (tx_buffer[portid] == NULL)
 			rte_exit(EXIT_FAILURE, "Cannot allocate buffer for tx on port %u\n",
 					(unsigned) portid);
-
 		rte_eth_tx_buffer_init(tx_buffer[portid], MAX_PKT_BURST);
 
 		ret = rte_eth_tx_buffer_set_err_callback(tx_buffer[portid],
@@ -692,19 +456,7 @@ main(int argc, char **argv)
 				  ret, (unsigned) portid);
 
 		printf("done: \n");
-
 		rte_eth_promiscuous_enable(portid);
-
-		printf("Port %u, MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n\n",
-				(unsigned) portid,
-				l2fwd_ports_eth_addr[portid].addr_bytes[0],
-				l2fwd_ports_eth_addr[portid].addr_bytes[1],
-				l2fwd_ports_eth_addr[portid].addr_bytes[2],
-				l2fwd_ports_eth_addr[portid].addr_bytes[3],
-				l2fwd_ports_eth_addr[portid].addr_bytes[4],
-				l2fwd_ports_eth_addr[portid].addr_bytes[5]);
-
-		/* initialize port stats */
 		memset(&port_statistics, 0, sizeof(port_statistics));
 	}
 
@@ -712,7 +464,6 @@ main(int argc, char **argv)
 		rte_exit(EXIT_FAILURE,
 			"All available ports are disabled. Please set portmask.\n");
 	}
-
 	check_all_ports_link_status(nb_ports, l2fwd_enabled_port_mask);
 
 	ret = 0;
@@ -737,3 +488,5 @@ main(int argc, char **argv)
 
 	return ret;
 }
+
+
