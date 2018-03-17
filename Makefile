@@ -29,6 +29,7 @@
 #   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 #   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+RTE_SDK = /home/khwarizmi/dpdk
 ifeq ($(RTE_SDK),)
 $(error "Please define RTE_SDK environment variable")
 endif
