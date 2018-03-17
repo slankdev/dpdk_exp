@@ -56,75 +56,17 @@ static const struct rte_eth_conf port_conf = {
 
 struct rte_mempool * l2fwd_pktmbuf_pool = NULL;
 
-/* Per-port statistics struct */
-struct l2fwd_port_statistics {
-	uint64_t tx;
-	uint64_t rx;
-	uint64_t dropped;
-} __rte_cache_aligned;
-struct l2fwd_port_statistics port_statistics[RTE_MAX_ETHPORTS];
-
 #define MAX_TIMER_PERIOD 86400 /* 1 day max */
-/* A tsc-based timer responsible for triggering statistics printout */
 static uint64_t timer_period = 10; /* default period is 10 seconds */
-
-/* Print out statistics on packets dropped */
-static void
-print_stats(void)
-{
-	uint64_t total_packets_dropped, total_packets_tx, total_packets_rx;
-	unsigned portid;
-
-	total_packets_dropped = 0;
-	total_packets_tx = 0;
-	total_packets_rx = 0;
-
-	const char clr[] = { 27, '[', '2', 'J', '\0' };
-	const char topLeft[] = { 27, '[', '1', ';', '1', 'H','\0' };
-
-		/* Clear screen and move to top left */
-	printf("%s%s", clr, topLeft);
-
-	printf("\nPort statistics ====================================");
-
-	for (portid = 0; portid < RTE_MAX_ETHPORTS; portid++) {
-		/* skip disabled ports */
-		if ((l2fwd_enabled_port_mask & (1 << portid)) == 0)
-			continue;
-		printf("\nStatistics for port %u ------------------------------"
-			   "\nPackets sent: %24"PRIu64
-			   "\nPackets received: %20"PRIu64
-			   "\nPackets dropped: %21"PRIu64,
-			   portid,
-			   port_statistics[portid].tx,
-			   port_statistics[portid].rx,
-			   port_statistics[portid].dropped);
-
-		total_packets_dropped += port_statistics[portid].dropped;
-		total_packets_tx += port_statistics[portid].tx;
-		total_packets_rx += port_statistics[portid].rx;
-	}
-	printf("\nAggregate statistics ==============================="
-		   "\nTotal packets sent: %18"PRIu64
-		   "\nTotal packets received: %14"PRIu64
-		   "\nTotal packets dropped: %15"PRIu64,
-		   total_packets_tx,
-		   total_packets_rx,
-		   total_packets_dropped);
-	printf("\n====================================================\n");
-}
 
 static void
 l2fwd_simple_forward(struct rte_mbuf *m, unsigned portid)
 {
 	unsigned dst_port;
-	int sent;
 	struct rte_eth_dev_tx_buffer *buffer;
 	dst_port = l2fwd_dst_ports[portid];
 	buffer = tx_buffer[dst_port];
-	sent = rte_eth_tx_buffer(dst_port, 0, buffer, m);
-	if (sent)
-		port_statistics[dst_port].tx += sent;
+	rte_eth_tx_buffer(dst_port, 0, buffer, m);
 }
 
 /* main processing loop */
@@ -133,7 +75,6 @@ l2fwd_main_loop(void)
 {
 	struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
 	struct rte_mbuf *m;
-	int sent;
 	unsigned lcore_id;
 	uint64_t prev_tsc, diff_tsc, cur_tsc, timer_tsc;
 	unsigned i, j, portid, nb_rx;
@@ -178,30 +119,14 @@ l2fwd_main_loop(void)
 				portid = l2fwd_dst_ports[qconf->rx_port_list[i]];
 				buffer = tx_buffer[portid];
 
-				sent = rte_eth_tx_buffer_flush(portid, 0, buffer);
-				if (sent)
-					port_statistics[portid].tx += sent;
-
+				rte_eth_tx_buffer_flush(portid, 0, buffer);
 			}
 
 			/* if timer is enabled */
 			if (timer_period > 0) {
-
 				/* advance the timer */
 				timer_tsc += diff_tsc;
-
-				/* if timer has reached its timeout */
-				if (unlikely(timer_tsc >= timer_period)) {
-
-					/* do this only on master core */
-					if (lcore_id == rte_get_master_lcore()) {
-						print_stats();
-						/* reset the timer */
-						timer_tsc = 0;
-					}
-				}
 			}
-
 			prev_tsc = cur_tsc;
 		}
 
@@ -213,8 +138,6 @@ l2fwd_main_loop(void)
 			portid = qconf->rx_port_list[i];
 			nb_rx = rte_eth_rx_burst((uint8_t) portid, 0,
 						 pkts_burst, MAX_PKT_BURST);
-
-			port_statistics[portid].rx += nb_rx;
 
 			for (j = 0; j < nb_rx; j++) {
 				m = pkts_burst[j];
@@ -304,7 +227,6 @@ signal_handler(int signum)
 int
 main(int argc, char **argv)
 {
-	struct lcore_queue_conf *qconf;
 	struct rte_eth_dev_info dev_info;
 	int ret;
 	uint8_t nb_ports;
@@ -368,7 +290,7 @@ main(int argc, char **argv)
 	}
 
 	rx_lcore_id = 0;
-	qconf = NULL;
+	struct lcore_queue_conf *qconf = NULL;
 
 	/* Initialize the port/queue configuration of each logical core */
 	for (portid = 0; portid < nb_ports; portid++) {
@@ -443,13 +365,6 @@ main(int argc, char **argv)
 					(unsigned) portid);
 		rte_eth_tx_buffer_init(tx_buffer[portid], MAX_PKT_BURST);
 
-		ret = rte_eth_tx_buffer_set_err_callback(tx_buffer[portid],
-				rte_eth_tx_buffer_count_callback,
-				&port_statistics[portid].dropped);
-		if (ret < 0)
-				rte_exit(EXIT_FAILURE, "Cannot set error callback for "
-						"tx buffer on port %u\n", (unsigned) portid);
-
 		/* Start device */
 		ret = rte_eth_dev_start(portid);
 		if (ret < 0)
@@ -458,7 +373,6 @@ main(int argc, char **argv)
 
 		printf("done: \n");
 		rte_eth_promiscuous_enable(portid);
-		memset(&port_statistics, 0, sizeof(port_statistics));
 	}
 
 	if (!nb_ports_available) {
