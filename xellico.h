@@ -40,5 +40,13 @@
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
 
+inline int xellico_boot_dpdk(int argc, char** argv)
+{
+  int ret = rte_eal_init(argc, argv);
+	if (ret < 0)
+		rte_exit(EXIT_FAILURE, "Invalid EAL arguments\n");
+  return ret;
+}
+
 #endif /* __XELLICO_H_ */
 
