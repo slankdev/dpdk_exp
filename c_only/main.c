@@ -1,5 +1,9 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2010-2016 Intel Corporation
+/*
+ * The use of this software is limited to education, research, and evaluation
+ * purposes only.  Commercial use is strictly prohibited.  For all other uses,
+ * contact the author(s).
+ * Copyright(c) 2018 Souta Kawahara
+ * Copyright(c) 2018 Hiroki Shirokura
  */
 
 #include <stdio.h>
@@ -39,55 +43,17 @@
 #include <rte_string_fns.h>
 #include <rte_acl.h>
 
-#if RTE_LOG_DP_LEVEL >= RTE_LOG_DEBUG
-#define L3FWDACL_DEBUG
-#endif
-#define DO_RFC_1812_CHECKS
-
 #define RTE_LOGTYPE_L3FWD RTE_LOGTYPE_USER1
-
 #define MAX_JUMBO_PKT_LEN  9600
-
 #define MEMPOOL_CACHE_SIZE 256
-
-/*
- * This expression is used to calculate the number of mbufs needed
- * depending on user input, taking into account memory for rx and tx hardware
- * rings, cache per lcore and mtable per port per lcore.
- * RTE_MAX is used to ensure that NB_MBUF never goes below a
- * minimum value of 8192
- */
-
-#define NB_MBUF	RTE_MAX(\
-	(nb_ports * nb_rx_queue * nb_rxd +	\
-	nb_ports * nb_lcores * MAX_PKT_BURST +	\
-	nb_ports * n_tx_queue * nb_txd +	\
-	nb_lcores * MEMPOOL_CACHE_SIZE),	\
-	(unsigned)8192)
-
 #define MAX_PKT_BURST 32
-#define BURST_TX_DRAIN_US 100 /* TX drain every ~100us */
-
 #define NB_SOCKETS 8
-
-/* Configure how many packets ahead to prefetch, when reading packets */
 #define PREFETCH_OFFSET	3
 
-/*
- * Configurable number of RX/TX ring descriptors
- */
-#define RTE_TEST_RX_DESC_DEFAULT 1024
-#define RTE_TEST_TX_DESC_DEFAULT 1024
-static uint16_t nb_rxd = RTE_TEST_RX_DESC_DEFAULT;
-static uint16_t nb_txd = RTE_TEST_TX_DESC_DEFAULT;
-
-/* ethernet addresses of ports */
-static struct ether_addr ports_eth_addr[RTE_MAX_ETHPORTS];
-
-/* mask of enabled ports */
-static uint32_t enabled_port_mask;
-static int promiscuous_on; /**< Ports set in promiscuous mode off by default. */
-static int numa_on = 1; /**< NUMA is enabled by default. */
+static uint16_t nb_rxd = 1024;
+static uint16_t nb_txd = 1024;
+static int promiscuous_on;
+static int numa_on = 1;
 
 struct lcore_rx_queue {
 	uint16_t port_id;
@@ -1945,7 +1911,7 @@ main(int argc, char **argv)
 		printf(", ");
 
 		/* init memory */
-		ret = init_mem(NB_MBUF);
+		ret = init_mem(81920);
 		if (ret < 0)
 			rte_exit(EXIT_FAILURE, "init_mem failed\n");
 
