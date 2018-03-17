@@ -40,12 +40,34 @@
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
 
-inline int xellico_boot_dpdk(int argc, char** argv)
+static inline int
+xellico_boot_dpdk (int argc, char** argv)
 {
   int ret = rte_eal_init(argc, argv);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Invalid EAL arguments\n");
   return ret;
+}
+
+static inline size_t
+rte_socket_count (void)
+{
+  const size_t rte_max_socket = 128;
+  uint8_t socket_enable[rte_max_socket];
+  memset (socket_enable, 0x0, sizeof(socket_enable));
+
+  for (size_t i=0; i<RTE_MAX_LCORE; i++) {
+    if (rte_lcore_is_enabled (i))
+      {
+        uint8_t socket_id = rte_lcore_to_socket_id(i);
+        socket_enable[socket_id] = 1;
+      }
+  }
+
+  size_t socket_count = 0;
+  for (size_t i=0; i<rte_max_socket; i++)
+    socket_count += socket_enable[i];
+  return socket_count;
 }
 
 #endif /* __XELLICO_H_ */

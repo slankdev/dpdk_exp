@@ -11,20 +11,17 @@
 #include <string.h>
 #include "xellico.h"
 
-static volatile bool force_quit;
 #define RTE_LOGTYPE_XELLICO RTE_LOGTYPE_USER1
 #define NB_MBUF   8192
 #define MAX_PKT_BURST 32
 #define BURST_TX_DRAIN_US 100 /* TX drain every ~100us */
 #define MEMPOOL_CACHE_SIZE 256
-static uint16_t nb_rxd = 128;
-static uint16_t nb_txd = 512;
-static uint32_t l2fwd_enabled_port_mask = 0x3;
+#define MAX_RX_QUEUE_PER_LCORE 16
+
+static volatile bool force_quit;
 static uint32_t l2fwd_dst_ports[RTE_MAX_ETHPORTS];
 static unsigned int l2fwd_rx_queue_per_lcore = 1;
 
-#define MAX_RX_QUEUE_PER_LCORE 16
-#define MAX_TX_QUEUE_PER_PORT 16
 struct lcore_queue_conf
 {
 	unsigned n_rx_port;
@@ -55,10 +52,7 @@ static const struct rte_eth_conf port_conf = {
 	},
 };
 
-struct rte_mempool * l2fwd_pktmbuf_pool = NULL;
-
-#define MAX_TIMER_PERIOD 86400 /* 1 day max */
-static uint64_t timer_period = 10; /* default period is 10 seconds */
+struct rte_mempool* pktmbuf_pool[RTE_MAX_LCORE];
 
 static void
 l2fwd_simple_forward(struct rte_mbuf *m, unsigned portid)
@@ -163,11 +157,6 @@ signal_handler (int signum)
 int
 main (int argc, char **argv)
 {
-	uint8_t nb_ports;
-	uint8_t nb_ports_available;
-	uint8_t last_port;
-	unsigned nb_ports_in_mask = 0;
-
 	int ret = xellico_boot_dpdk (argc, argv);
 	argc -= ret;
 	argv += ret;
@@ -176,32 +165,32 @@ main (int argc, char **argv)
 	signal (SIGINT, signal_handler);
 	signal (SIGTERM, signal_handler);
 
-	/* convert to number of cycles */
-	timer_period *= rte_get_timer_hz();
-
+	for (size_t i=0; i<rte_socket_count(); i++) {
+		char str[128];
+		snprintf (str, sizeof (str), "mbuf_pool[%zd]", i);
+		pktmbuf_pool[i] = rte_pktmbuf_pool_create (str, NB_MBUF,
+			MEMPOOL_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, i);
+		if (pktmbuf_pool[i] == NULL)
+			rte_exit (EXIT_FAILURE, "Cannot init mbuf pool %s\n", str);
+		RTE_LOG (INFO, XELLICO, "create mempool %s\n", str);
+	}
 	/* create the mbuf pool */
-	l2fwd_pktmbuf_pool = rte_pktmbuf_pool_create ("mbuf_pool", NB_MBUF,
-		MEMPOOL_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id ());
-	if (l2fwd_pktmbuf_pool == NULL)
-		rte_exit (EXIT_FAILURE, "Cannot init mbuf pool\n");
 
-	nb_ports = rte_eth_dev_count ();
+	uint8_t nb_ports = rte_eth_dev_count ();
 	if (nb_ports == 0)
 		rte_exit (EXIT_FAILURE, "No Ethernet ports - bye\n");
 
 	/* reset l2fwd_dst_ports */
 	for (uint8_t portid = 0; portid < RTE_MAX_ETHPORTS; portid++)
 		l2fwd_dst_ports[portid] = 0;
-	last_port = 0;
 
 	/*
 	 * Each logical core is assigned a dedicated TX queue on each port.
 	 */
+	uint8_t last_port = 0;
+	unsigned nb_ports_in_mask = 0;
 	for (uint8_t portid = 0; portid < nb_ports; portid++)
 		{
-			if ((l2fwd_enabled_port_mask & (1 << portid)) == 0)
-				continue;
-
 			if (nb_ports_in_mask % 2)
 				{
 					l2fwd_dst_ports[portid] = last_port;
@@ -224,10 +213,6 @@ main (int argc, char **argv)
 	/* Initialize the port/queue configuration of each logical core */
 	for (uint8_t portid = 0; portid < nb_ports; portid++)
 		{
-			/* skip ports that are not enabled */
-			if ((l2fwd_enabled_port_mask & (1 << portid)) == 0)
-				continue;
-
 			/* get the lcore_id for this port */
 			while (rte_lcore_is_enabled (rx_lcore_id) == 0 ||
 						 lcore_queue_conf[rx_lcore_id].n_rx_port ==
@@ -247,25 +232,17 @@ main (int argc, char **argv)
 			printf("Lcore %u: RX port %u\n", rx_lcore_id, (unsigned) portid);
 		}
 
-	nb_ports_available = nb_ports;
-
+	uint8_t nb_ports_available = nb_ports;
 	for (uint8_t portid = 0; portid < nb_ports; portid++)
 		{
-
-			if ((l2fwd_enabled_port_mask & (1 << portid)) == 0)
-				{
-					printf("Skipping disabled port %u\n", (unsigned) portid);
-					nb_ports_available--;
-					continue;
-				}
-
-			printf("Initializing port %u... ", (unsigned) portid);
-			fflush(stdout);
+			printf("Initializing port %u... \n", (unsigned) portid);
 			ret = rte_eth_dev_configure (portid, 1, 1, &port_conf);
 			if (ret < 0)
 				rte_exit (EXIT_FAILURE, "Cannot configure device: err=%d, port=%u\n",
 						ret, (unsigned) portid);
 
+			uint16_t nb_rxd = 128;
+			uint16_t nb_txd = 512;
 			ret = rte_eth_dev_adjust_nb_rx_tx_desc (portid, &nb_rxd, &nb_txd);
 			if (ret < 0)
 				rte_exit(EXIT_FAILURE,
@@ -273,10 +250,10 @@ main (int argc, char **argv)
 					 ret, (unsigned) portid);
 
 			/* init one RX queue */
-			fflush (stdout);
+			uint8_t port_socket_id = rte_eth_dev_socket_id(portid);
 			ret = rte_eth_rx_queue_setup (portid, 0, nb_rxd,
 								 rte_eth_dev_socket_id (portid),
-								 NULL, l2fwd_pktmbuf_pool);
+								 NULL, pktmbuf_pool[port_socket_id]);
 			if (ret < 0)
 				rte_exit(EXIT_FAILURE, "rte_eth_rx_queue_setup:err=%d, port=%u\n",
 						ret, (unsigned) portid);
@@ -313,13 +290,11 @@ main (int argc, char **argv)
 				"All available ports are disabled. Please set portmask.\n");
 		}
 
-	rte_eal_mp_remote_launch(l2fwd_launch_one_lcore, NULL, CALL_MASTER);
+	rte_eal_mp_remote_launch (l2fwd_launch_one_lcore, NULL, CALL_MASTER);
 	rte_eal_mp_wait_lcore ();
 
 	for (uint8_t portid = 0; portid < nb_ports; portid++)
 		{
-			if ((l2fwd_enabled_port_mask & (1 << portid)) == 0)
-				continue;
 			printf ("Closing port %d...", portid);
 			rte_eth_dev_stop (portid);
 			rte_eth_dev_close (portid);
