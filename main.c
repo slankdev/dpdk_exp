@@ -109,37 +109,29 @@ init_queue_conf (void)
         }
     }
 
-  lcore_queue_conf[0].n_rx_port = 1;
+  lcore_queue_conf[0].n_rx_port = 2;
   lcore_queue_conf[0].rx_port_list[0] = 0;
   lcore_queue_conf[0].rx_queue_list[0] = 0;
+  lcore_queue_conf[0].rx_port_list[1] = 0;
+  lcore_queue_conf[0].rx_queue_list[1] = 2;
 
-  lcore_queue_conf[1].n_rx_port = 1;
+  lcore_queue_conf[1].n_rx_port = 2;
   lcore_queue_conf[1].rx_port_list[0] = 1;
   lcore_queue_conf[1].rx_queue_list[0] = 0;
+  lcore_queue_conf[1].rx_port_list[1] = 1;
+  lcore_queue_conf[1].rx_queue_list[1] = 2;
 
-  lcore_queue_conf[2].n_rx_port = 1;
+  lcore_queue_conf[2].n_rx_port = 2;
   lcore_queue_conf[2].rx_port_list[0] = 0;
   lcore_queue_conf[2].rx_queue_list[0] = 1;
+  lcore_queue_conf[2].rx_port_list[1] = 0;
+  lcore_queue_conf[2].rx_queue_list[1] = 3;
 
-  lcore_queue_conf[3].n_rx_port = 1;
+  lcore_queue_conf[3].n_rx_port = 2;
   lcore_queue_conf[3].rx_port_list[0] = 1;
   lcore_queue_conf[3].rx_queue_list[0] = 1;
-
-  lcore_queue_conf[4].n_rx_port = 1;
-  lcore_queue_conf[4].rx_port_list[0] = 0;
-  lcore_queue_conf[4].rx_queue_list[0] = 2;
-
-  lcore_queue_conf[5].n_rx_port = 1;
-  lcore_queue_conf[5].rx_port_list[0] = 1;
-  lcore_queue_conf[5].rx_queue_list[0] = 2;
-
-  lcore_queue_conf[6].n_rx_port = 1;
-  lcore_queue_conf[6].rx_port_list[0] = 0;
-  lcore_queue_conf[6].rx_queue_list[0] = 3;
-
-  lcore_queue_conf[7].n_rx_port = 1;
-  lcore_queue_conf[7].rx_port_list[0] = 1;
-  lcore_queue_conf[7].rx_queue_list[0] = 3;
+  lcore_queue_conf[3].rx_port_list[1] = 1;
+  lcore_queue_conf[3].rx_queue_list[1] = 3;
 }
 
 static inline void
@@ -309,8 +301,8 @@ main (int argc, char **argv)
       l2fwd_dst_ports[last_port] = last_port;
     }
 
-  init_queue_conf();
-  dump_queue_confs(lcore_queue_conf, 40);
+  init_queue_conf ();
+  dump_queue_confs (lcore_queue_conf, 40);
 
   uint8_t nb_ports_available = nb_ports;
   for (uint8_t portid = 0; portid < nb_ports; portid++)
