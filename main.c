@@ -31,7 +31,6 @@ struct lcore_queue_conf
   uint32_t rx_queue_list[MAX_RX_QUEUE_PER_LCORE];
   struct rte_eth_dev_tx_buffer *tx_buffer[RTE_MAX_ETHPORTS];
 } __rte_cache_aligned;
-
 struct lcore_queue_conf lcore_queue_conf[RTE_MAX_LCORE];
 
 static const struct rte_eth_conf port_conf = {
@@ -78,7 +77,7 @@ dump_queue_confs (struct lcore_queue_conf* qconfs, size_t n_qconfs)
 }
 
 static void
-init_qconf_buffer (void)
+init_queue_conf_buffer_init (void)
 {
   const size_t nb_ports = rte_eth_dev_count();
   for (size_t i=0; i<RTE_MAX_LCORE; i++)
@@ -107,36 +106,9 @@ init_queue_conf (void)
             rte_exit(EXIT_FAILURE, "Cannot allocate buffer for tx on port %u\n",
                 (unsigned) portid);
           lcore_queue_conf[i].tx_buffer[portid] = txbuff;
-          /* rte_eth_tx_buffer_init (txbuff, MAX_PKT_BURST); */
         }
     }
-#if 0
-  const unsigned int l2fwd_rx_queue_per_lcore = 1;
-  unsigned rx_lcore_id = 0;
-  struct lcore_queue_conf *qconf = NULL;
-  uint8_t nb_ports = rte_eth_dev_count ();
-  /* Initialize the port/queue configuration of each logical core */
-  for (uint8_t portid = 0; portid < nb_ports; portid++)
-    {
-      /* get the lcore_id for this port */
-      while (rte_lcore_is_enabled (rx_lcore_id) == 0 ||
-             lcore_queue_conf[rx_lcore_id].n_rx_port ==
-             l2fwd_rx_queue_per_lcore)
-        {
-          rx_lcore_id++;
-          if (rx_lcore_id >= RTE_MAX_LCORE)
-            rte_exit(EXIT_FAILURE, "Not enough cores\n");
-        }
 
-      if (qconf != &lcore_queue_conf[rx_lcore_id])
-        /* Assigned a new logical core in the loop above. */
-        qconf = &lcore_queue_conf[rx_lcore_id];
-
-      qconf->rx_port_list[qconf->n_rx_port] = portid;
-      qconf->n_rx_port++;
-      printf("Lcore %u: RX port %u\n", rx_lcore_id, (unsigned) portid);
-    }
-#else
   lcore_queue_conf[0].n_rx_port = 1;
   lcore_queue_conf[0].rx_port_list[0] = 0;
   lcore_queue_conf[0].rx_queue_list[0] = 0;
@@ -152,7 +124,22 @@ init_queue_conf (void)
   lcore_queue_conf[3].n_rx_port = 1;
   lcore_queue_conf[3].rx_port_list[0] = 1;
   lcore_queue_conf[3].rx_queue_list[0] = 1;
-#endif
+
+  lcore_queue_conf[4].n_rx_port = 1;
+  lcore_queue_conf[4].rx_port_list[0] = 0;
+  lcore_queue_conf[4].rx_queue_list[0] = 2;
+
+  lcore_queue_conf[5].n_rx_port = 1;
+  lcore_queue_conf[5].rx_port_list[0] = 1;
+  lcore_queue_conf[5].rx_queue_list[0] = 2;
+
+  lcore_queue_conf[6].n_rx_port = 1;
+  lcore_queue_conf[6].rx_port_list[0] = 0;
+  lcore_queue_conf[6].rx_queue_list[0] = 3;
+
+  lcore_queue_conf[7].n_rx_port = 1;
+  lcore_queue_conf[7].rx_port_list[0] = 1;
+  lcore_queue_conf[7].rx_queue_list[0] = 3;
 }
 
 static inline void
@@ -179,6 +166,7 @@ l2fwd_main_loop (void)
       if (lcore_id == 31)
         while (!force_quit)
           {
+            printf("---\n");
             dump_mempool(pktmbuf_pool[0]);
             printf("---\n");
             dump_mempool(pktmbuf_pool[1]);
@@ -230,7 +218,6 @@ l2fwd_main_loop (void)
       for (size_t i = 0; i < qconf->n_rx_port; i++)
         {
           struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
-
           uint32_t in_portid = qconf->rx_port_list[i];
           uint32_t in_queueid = qconf->rx_queue_list[i];
           unsigned nb_rx = rte_eth_rx_burst ((uint8_t) in_portid,
@@ -241,8 +228,7 @@ l2fwd_main_loop (void)
               struct rte_mbuf *m = pkts_burst[j];
 
 #if 1 // DELAY
-              size_t nd = 0;
-              for (size_t d=0; d<100; d++) nd += d;
+              rte_delay_us_block (1);
 #endif
 
               rte_prefetch0 (rte_pktmbuf_mtod (m, void *));
@@ -329,7 +315,7 @@ main (int argc, char **argv)
   uint8_t nb_ports_available = nb_ports;
   for (uint8_t portid = 0; portid < nb_ports; portid++)
     {
-      const size_t nb_rxq = 2;
+      const size_t nb_rxq = 4;
       const size_t nb_txq = rte_lcore_count();
       printf("Initializing port %u... \n", (unsigned) portid);
       ret = rte_eth_dev_configure (portid, nb_rxq, nb_txq, &port_conf);
@@ -370,7 +356,7 @@ main (int argc, char **argv)
         }
     }
 
-  init_qconf_buffer();
+  init_queue_conf_buffer_init ();
 
   for (uint8_t portid = 0; portid < nb_ports; portid++)
     {

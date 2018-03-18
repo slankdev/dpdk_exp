@@ -41,8 +41,7 @@ include $(RTE_SDK)/mk/rte.vars.mk
 
 APP = xellico
 SRCS-y := main.c
-
-CFLAGS += -O0 -g
+CFLAGS += -O3 -g
 CFLAGS += $(WERROR_FLAGS)
 
 include $(RTE_SDK)/mk/rte.extapp.mk
