@@ -49,3 +49,6 @@ include $(RTE_SDK)/mk/rte.extapp.mk
 
 run:
 	sudo ./build/xellico
+
+gdb:
+	sudo gdb ./build/xellico

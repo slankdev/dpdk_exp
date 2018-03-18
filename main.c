@@ -23,7 +23,6 @@
 
 static volatile bool force_quit;
 static uint32_t l2fwd_dst_ports[RTE_MAX_ETHPORTS];
-static unsigned int l2fwd_rx_queue_per_lcore = 1;
 
 struct lcore_queue_conf
 {
@@ -31,10 +30,10 @@ struct lcore_queue_conf
   uint32_t rx_port_list[MAX_RX_QUEUE_PER_LCORE];
   uint32_t rx_queue_list[MAX_RX_QUEUE_PER_LCORE];
   uint32_t tx_queue_id[RTE_MAX_ETHPORTS];
+  struct rte_eth_dev_tx_buffer *tx_buffer[RTE_MAX_ETHPORTS];
 } __rte_cache_aligned;
 
 struct lcore_queue_conf lcore_queue_conf[RTE_MAX_LCORE];
-static struct rte_eth_dev_tx_buffer *tx_buffer[RTE_MAX_ETHPORTS];
 
 static const struct rte_eth_conf port_conf = {
   .rxmode = {
@@ -60,22 +59,61 @@ static const struct rte_eth_conf port_conf = {
 struct rte_mempool* pktmbuf_pool[RTE_MAX_LCORE];
 
 static void
-dump_queue_conf (struct lcore_queue_conf* qconfs, size_t n_qconfs)
+dump_queue_conf (struct lcore_queue_conf* qconf)
+{
+  printf ("qconf: n_rx_port=%u \n", qconf->n_rx_port);
+  for (size_t j=0; j<qconf->n_rx_port; j++)
+  printf ("   port%u queue%u\n",
+      qconf->rx_port_list[j],
+      qconf->rx_queue_list[j]);
+}
+
+static void
+dump_queue_confs (struct lcore_queue_conf* qconfs, size_t n_qconfs)
 {
   for (size_t i=0; i<n_qconfs; i++)
     {
       struct lcore_queue_conf* qconf = (qconfs + i);
-      printf ("lcore%zd: n_rx_port=%u \n", i, qconf->n_rx_port);
-      for (size_t j=0; j<qconf->n_rx_port; j++)
-      printf ("   port%u queue%u\n",
-          qconf->rx_port_list[j],
-          qconf->rx_queue_list[j]);
+      dump_queue_conf (qconf);
     }
 }
 
 static void
-init_queue_conf (unsigned rx_lcore_id)
+init_qconf_buffer (void)
 {
+  const size_t nb_ports = rte_eth_dev_count();
+  for (size_t i=0; i<RTE_MAX_LCORE; i++)
+    {
+      for (size_t portid=0; portid<nb_ports; portid++)
+        {
+          struct rte_eth_dev_tx_buffer* txbuff =
+            lcore_queue_conf[i].tx_buffer[portid];
+          rte_eth_tx_buffer_init (txbuff, MAX_PKT_BURST);
+        }
+    }
+}
+
+static void
+init_queue_conf (void)
+{
+  const size_t nb_ports = rte_eth_dev_count();
+  for (size_t i=0; i<RTE_MAX_LCORE; i++)
+    {
+      for (size_t portid=0; portid<nb_ports; portid++)
+        {
+          struct rte_eth_dev_tx_buffer* txbuff = rte_zmalloc_socket ("tx_buffer",
+              RTE_ETH_TX_BUFFER_SIZE (MAX_PKT_BURST), 0,
+              rte_eth_dev_socket_id (portid));
+          if (txbuff == NULL)
+            rte_exit(EXIT_FAILURE, "Cannot allocate buffer for tx on port %u\n",
+                (unsigned) portid);
+          lcore_queue_conf[i].tx_buffer[portid] = txbuff;
+          /* rte_eth_tx_buffer_init (txbuff, MAX_PKT_BURST); */
+        }
+    }
+#if 0
+  const unsigned int l2fwd_rx_queue_per_lcore = 1;
+  unsigned rx_lcore_id = 0;
   struct lcore_queue_conf *qconf = NULL;
   uint8_t nb_ports = rte_eth_dev_count ();
   /* Initialize the port/queue configuration of each logical core */
@@ -99,15 +137,38 @@ init_queue_conf (unsigned rx_lcore_id)
       qconf->n_rx_port++;
       printf("Lcore %u: RX port %u\n", rx_lcore_id, (unsigned) portid);
     }
+#else
+  lcore_queue_conf[0].n_rx_port = 1;
+  lcore_queue_conf[0].rx_port_list[0] = 0;
+  lcore_queue_conf[0].rx_queue_list[0] = 0;
+  lcore_queue_conf[0].tx_queue_id[0] = 0;
+
+  lcore_queue_conf[1].n_rx_port = 1;
+  lcore_queue_conf[1].rx_port_list[0] = 1;
+  lcore_queue_conf[1].rx_queue_list[0] = 0;
+  lcore_queue_conf[1].tx_queue_id[0] = 0;
+
+  lcore_queue_conf[2].n_rx_port = 1;
+  lcore_queue_conf[2].rx_port_list[0] = 0;
+  lcore_queue_conf[2].rx_queue_list[0] = 1;
+  lcore_queue_conf[2].tx_queue_id[0] = 1;
+
+  lcore_queue_conf[3].n_rx_port = 1;
+  lcore_queue_conf[3].rx_port_list[0] = 1;
+  lcore_queue_conf[3].rx_queue_list[0] = 1;
+  lcore_queue_conf[3].tx_queue_id[0] = 1;
+
+#endif
 }
 
 static inline void
 l2fwd_simple_forward (struct rte_mbuf *m, unsigned portid)
 {
+  struct lcore_queue_conf* qconf = &lcore_queue_conf[rte_lcore_id()];
   unsigned dst_port = l2fwd_dst_ports[portid];
-  struct rte_eth_dev_tx_buffer *buffer;
-  buffer = tx_buffer[dst_port];
-  rte_eth_tx_buffer(dst_port, 0, buffer, m);
+  unsigned dst_queue = qconf->tx_queue_id[dst_port];
+  struct rte_eth_dev_tx_buffer* buffer = qconf->tx_buffer[dst_port];
+  rte_eth_tx_buffer(dst_port, dst_queue, buffer, m);
 }
 
 /* main processing loop */
@@ -138,6 +199,8 @@ l2fwd_main_loop (void)
   const uint64_t drain_tsc =
       (rte_get_tsc_hz () + US_PER_S - 1)
       / US_PER_S * BURST_TX_DRAIN_US;
+  printf ("Staring Main_loop on lcore%u \n", rte_lcore_id());
+  dump_queue_conf (qconf);
   while (!force_quit)
     {
       /*
@@ -151,7 +214,7 @@ l2fwd_main_loop (void)
             {
               uint32_t dst_portid = l2fwd_dst_ports[qconf->rx_port_list[i]];
               uint32_t dst_queueid = qconf->tx_queue_id[dst_portid];
-              struct rte_eth_dev_tx_buffer *buffer = tx_buffer[dst_portid];
+              struct rte_eth_dev_tx_buffer *buffer = qconf->tx_buffer[dst_portid];
               rte_eth_tx_buffer_flush (dst_portid, dst_queueid, buffer);
             }
           prev_tsc = cur_tsc;
@@ -257,21 +320,22 @@ main (int argc, char **argv)
       l2fwd_dst_ports[last_port] = last_port;
     }
 
-  unsigned rx_lcore_id = 0;
-  init_queue_conf(rx_lcore_id);
-  dump_queue_conf(lcore_queue_conf, 40);
+  init_queue_conf();
+  dump_queue_confs(lcore_queue_conf, 40);
 
   uint8_t nb_ports_available = nb_ports;
   for (uint8_t portid = 0; portid < nb_ports; portid++)
     {
+      const size_t nb_rxq = 2;
+      const size_t nb_txq = 2;
       printf("Initializing port %u... \n", (unsigned) portid);
-      ret = rte_eth_dev_configure (portid, 1, 1, &port_conf);
+      ret = rte_eth_dev_configure (portid, nb_rxq, nb_txq, &port_conf);
       if (ret < 0)
         rte_exit (EXIT_FAILURE, "Cannot configure device: err=%d, port=%u\n",
             ret, (unsigned) portid);
 
-      uint16_t nb_rxd = 1280;
-      uint16_t nb_txd = 5120;
+      uint16_t nb_rxd = 1280; // TODO
+      uint16_t nb_txd = 5120; // TODO
       ret = rte_eth_dev_adjust_nb_rx_tx_desc (portid, &nb_rxd, &nb_txd);
       if (ret < 0)
         rte_exit(EXIT_FAILURE,
@@ -280,32 +344,36 @@ main (int argc, char **argv)
 
       /* init one RX queue */
       uint8_t port_socket_id = rte_eth_dev_socket_id(portid);
-      ret = rte_eth_rx_queue_setup (portid, 0, nb_rxd,
-                 rte_eth_dev_socket_id (portid),
-                 NULL, pktmbuf_pool[port_socket_id]);
-      if (ret < 0)
-        rte_exit(EXIT_FAILURE, "rte_eth_rx_queue_setup:err=%d, port=%u\n",
-            ret, (unsigned) portid);
+      for (uint32_t q=0; q<nb_rxq; q++)
+        {
+          ret = rte_eth_rx_queue_setup (portid, q, nb_rxd,
+                     rte_eth_dev_socket_id (portid),
+                     NULL, pktmbuf_pool[port_socket_id]);
+          if (ret < 0)
+            rte_exit(EXIT_FAILURE,
+                "rte_eth_rx_queue_setup:err=%d, port=%u, queue=%u\n",
+                ret, (unsigned) portid, q);
+        }
 
       /* init one TX queue on each port */
-      fflush (stdout);
-      ret = rte_eth_tx_queue_setup (portid, 0, nb_txd,
-          rte_eth_dev_socket_id (portid), NULL);
-      if (ret < 0)
-        rte_exit(EXIT_FAILURE, "rte_eth_tx_queue_setup:err=%d, port=%u\n",
-          ret, (unsigned) portid);
+      fflush (stdout); // TODO delete
 
-#if 1
-      /* Initialize TX buffers */
-      tx_buffer[portid] = rte_zmalloc_socket ("tx_buffer",
-          RTE_ETH_TX_BUFFER_SIZE (MAX_PKT_BURST), 0,
-          rte_eth_dev_socket_id (portid));
-      if (tx_buffer[portid] == NULL)
-        rte_exit(EXIT_FAILURE, "Cannot allocate buffer for tx on port %u\n",
-            (unsigned) portid);
-      rte_eth_tx_buffer_init (tx_buffer[portid], MAX_PKT_BURST);
-#endif
+      for (uint32_t q=0; q<nb_rxq; q++)
+        {
+          ret = rte_eth_tx_queue_setup (portid, q, nb_txd,
+              rte_eth_dev_socket_id (portid), NULL);
+          if (ret < 0)
+            rte_exit(EXIT_FAILURE,
+                "rte_eth_tx_queue_setup:err=%d, port=%u, queue=%u\n",
+                ret, (unsigned) portid, q);
+        }
+    }
 
+  init_qconf_buffer();
+
+  for (uint8_t portid = 0; portid < nb_ports; portid++)
+    {
+      printf("slankdev portid=%u", portid);
       ret = rte_eth_dev_start (portid);
       if (ret < 0)
         rte_exit(EXIT_FAILURE, "rte_eth_dev_start:err=%d, port=%u\n",
