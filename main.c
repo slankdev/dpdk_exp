@@ -12,6 +12,7 @@
 #include <assert.h>
 #include <unistd.h>
 #include "xellico.h"
+#include "dpdk_misc.h"
 
 #define RTE_LOGTYPE_XELLICO RTE_LOGTYPE_USER1
 #define NB_MBUF   81920
@@ -26,9 +27,9 @@ static unsigned int l2fwd_rx_queue_per_lcore = 1;
 
 struct lcore_queue_conf
 {
-  unsigned n_rx_port;
-  unsigned rx_port_list[MAX_RX_QUEUE_PER_LCORE];
-  unsigned rx_queue_list[MAX_RX_QUEUE_PER_LCORE];
+  uint32_t n_rx_port;
+  uint32_t rx_port_list[MAX_RX_QUEUE_PER_LCORE];
+  uint32_t rx_queue_list[MAX_RX_QUEUE_PER_LCORE];
   uint32_t tx_queue_id[RTE_MAX_ETHPORTS];
 } __rte_cache_aligned;
 
@@ -100,22 +101,6 @@ init_queue_conf (unsigned rx_lcore_id)
     }
 }
 
-static void
-rte_pktmbuf_free_bulk(struct rte_mbuf* m_list[], size_t npkts)
-{
-  while (npkts--)
-    rte_pktmbuf_free(*m_list++);
-}
-
-static inline void
-l2fwd_simple_forward_bulk (struct rte_mbuf* pkts_burst[],
-    size_t nb_rx, unsigned in_portid)
-{
-  unsigned dst_port = l2fwd_dst_ports[in_portid];
-  const uint32_t ntx = rte_eth_tx_burst (dst_port, 0, pkts_burst, nb_rx);
-  if (ntx < nb_rx) rte_pktmbuf_free_bulk (&pkts_burst[ntx], nb_rx-ntx);
-}
-
 static inline void
 l2fwd_simple_forward (struct rte_mbuf *m, unsigned portid)
 {
@@ -123,17 +108,6 @@ l2fwd_simple_forward (struct rte_mbuf *m, unsigned portid)
   struct rte_eth_dev_tx_buffer *buffer;
   buffer = tx_buffer[dst_port];
   rte_eth_tx_buffer(dst_port, 0, buffer, m);
-}
-
-static inline void
-dump_mempool (struct rte_mempool* mp)
-{
-  printf ("name     : %s \n", mp->name);
-  printf ("socket_id: %u \n", mp->socket_id);
-  printf ("size     : %u (using %.0f%%) \n", mp->size,
-      rte_mempool_in_use_count (mp) / (float) (mp->size) * 100);
-  printf ("in-use   : %u \n", rte_mempool_in_use_count (mp));
-  printf ("avail    : %u \n", rte_mempool_avail_count (mp));
 }
 
 /* main processing loop */
