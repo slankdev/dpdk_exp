@@ -68,15 +68,8 @@ l2fwd_simple_forward(struct rte_mbuf *m, unsigned portid)
 static void
 l2fwd_main_loop (void)
 {
-	uint64_t prev_tsc, diff_tsc, cur_tsc;
-	unsigned portid, nb_rx;
-	struct lcore_queue_conf *qconf;
-	struct rte_eth_dev_tx_buffer *buffer;
-
-	prev_tsc = 0;
-
 	unsigned lcore_id = rte_lcore_id ();
-	qconf = &lcore_queue_conf[lcore_id];
+	struct lcore_queue_conf *qconf = &lcore_queue_conf[lcore_id];
 
 	if (qconf->n_rx_port == 0)
 		{
@@ -88,53 +81,55 @@ l2fwd_main_loop (void)
 
 	for (size_t i = 0; i < qconf->n_rx_port; i++)
 		{
-			portid = qconf->rx_port_list[i];
+			unsigned portid = qconf->rx_port_list[i];
 			RTE_LOG (INFO, XELLICO,
 					" -- lcoreid=%u portid=%u\n",
 					lcore_id, portid);
 		}
 
+	uint64_t prev_tsc = 0;
 	const uint64_t drain_tsc =
 		  (rte_get_tsc_hz () + US_PER_S - 1)
 			/ US_PER_S * BURST_TX_DRAIN_US;
-	while (!force_quit) {
+	while (!force_quit)
+		{
+			/*
+			 * TX burst queue drain
+			 */
+			uint64_t cur_tsc = rte_rdtsc ();
+			uint64_t diff_tsc = cur_tsc - prev_tsc;
+			if (unlikely (diff_tsc > drain_tsc))
+				{
+					for (size_t i = 0; i < qconf->n_rx_port; i++)
+						{
+							uint32_t dst_portid = l2fwd_dst_ports[qconf->rx_port_list[i]];
+							struct rte_eth_dev_tx_buffer *buffer = tx_buffer[dst_portid];
 
-		cur_tsc = rte_rdtsc ();
+							rte_eth_tx_buffer_flush (dst_portid, 0, buffer);
+						}
 
-		/*
-		 * TX burst queue drain
-		 */
-		diff_tsc = cur_tsc - prev_tsc;
-		if (unlikely (diff_tsc > drain_tsc)) {
+					prev_tsc = cur_tsc;
+				}
 
-			for (size_t i = 0; i < qconf->n_rx_port; i++) {
+			/*
+			 * Read packet from RX queues
+			 */
+			for (size_t i = 0; i < qconf->n_rx_port; i++)
+				{
+					struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
 
-				portid = l2fwd_dst_ports[qconf->rx_port_list[i]];
-				buffer = tx_buffer[portid];
+					uint32_t in_portid = qconf->rx_port_list[i];
+					unsigned nb_rx = rte_eth_rx_burst ((uint8_t) in_portid,
+							0, pkts_burst, MAX_PKT_BURST);
 
-				rte_eth_tx_buffer_flush (portid, 0, buffer);
-			}
-
-			prev_tsc = cur_tsc;
+					for (size_t j = 1; j < nb_rx; j++)
+						{
+							struct rte_mbuf *m = pkts_burst[j];
+							rte_prefetch0(rte_pktmbuf_mtod (m, void *));
+							l2fwd_simple_forward (m, in_portid);
+						}
+				}
 		}
-
-		/*
-		 * Read packet from RX queues
-		 */
-		for (size_t i = 0; i < qconf->n_rx_port; i++) {
-			struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
-
-			portid = qconf->rx_port_list[i];
-			nb_rx = rte_eth_rx_burst ((uint8_t) portid, 0,
-						 pkts_burst, MAX_PKT_BURST);
-
-			for (size_t j = 0; j < nb_rx; j++) {
-				struct rte_mbuf *m = pkts_burst[j];
-				rte_prefetch0(rte_pktmbuf_mtod (m, void *));
-				l2fwd_simple_forward (m, portid);
-			}
-		}
-	}
 }
 
 static int
