@@ -29,7 +29,6 @@ struct lcore_queue_conf
   uint32_t n_rx_port;
   uint32_t rx_port_list[MAX_RX_QUEUE_PER_LCORE];
   uint32_t rx_queue_list[MAX_RX_QUEUE_PER_LCORE];
-  uint32_t tx_queue_id[RTE_MAX_ETHPORTS];
   struct rte_eth_dev_tx_buffer *tx_buffer[RTE_MAX_ETHPORTS];
 } __rte_cache_aligned;
 
@@ -141,32 +140,28 @@ init_queue_conf (void)
   lcore_queue_conf[0].n_rx_port = 1;
   lcore_queue_conf[0].rx_port_list[0] = 0;
   lcore_queue_conf[0].rx_queue_list[0] = 0;
-  lcore_queue_conf[0].tx_queue_id[0] = 0;
 
   lcore_queue_conf[1].n_rx_port = 1;
   lcore_queue_conf[1].rx_port_list[0] = 1;
   lcore_queue_conf[1].rx_queue_list[0] = 0;
-  lcore_queue_conf[1].tx_queue_id[0] = 0;
 
   lcore_queue_conf[2].n_rx_port = 1;
   lcore_queue_conf[2].rx_port_list[0] = 0;
   lcore_queue_conf[2].rx_queue_list[0] = 1;
-  lcore_queue_conf[2].tx_queue_id[0] = 1;
 
   lcore_queue_conf[3].n_rx_port = 1;
   lcore_queue_conf[3].rx_port_list[0] = 1;
   lcore_queue_conf[3].rx_queue_list[0] = 1;
-  lcore_queue_conf[3].tx_queue_id[0] = 1;
-
 #endif
 }
 
 static inline void
 l2fwd_simple_forward (struct rte_mbuf *m, unsigned portid)
 {
-  struct lcore_queue_conf* qconf = &lcore_queue_conf[rte_lcore_id()];
+  uint32_t lcore_id = rte_lcore_id();
+  struct lcore_queue_conf* qconf = &lcore_queue_conf[lcore_id];
   unsigned dst_port = l2fwd_dst_ports[portid];
-  unsigned dst_queue = qconf->tx_queue_id[dst_port];
+  unsigned dst_queue = lcore_id;
   struct rte_eth_dev_tx_buffer* buffer = qconf->tx_buffer[dst_port];
   rte_eth_tx_buffer(dst_port, dst_queue, buffer, m);
 }
@@ -181,6 +176,15 @@ l2fwd_main_loop (void)
   if (qconf->n_rx_port == 0)
     {
       RTE_LOG (INFO, XELLICO, "lcore %u has nothing to do\n", lcore_id);
+      if (lcore_id == 31)
+        while (!force_quit)
+          {
+            dump_mempool(pktmbuf_pool[0]);
+            printf("---\n");
+            dump_mempool(pktmbuf_pool[1]);
+            printf("==============\n");
+            sleep(1);
+          }
       return;
     }
 
@@ -213,7 +217,7 @@ l2fwd_main_loop (void)
           for (size_t i = 0; i < qconf->n_rx_port; i++)
             {
               uint32_t dst_portid = l2fwd_dst_ports[qconf->rx_port_list[i]];
-              uint32_t dst_queueid = qconf->tx_queue_id[dst_portid];
+              uint32_t dst_queueid = rte_lcore_id();
               struct rte_eth_dev_tx_buffer *buffer = qconf->tx_buffer[dst_portid];
               rte_eth_tx_buffer_flush (dst_portid, dst_queueid, buffer);
             }
@@ -235,6 +239,12 @@ l2fwd_main_loop (void)
           for (size_t j = 0; j < nb_rx; j++)
             {
               struct rte_mbuf *m = pkts_burst[j];
+
+#if 1 // DELAY
+              size_t nd = 0;
+              for (size_t d=0; d<100; d++) nd += d;
+#endif
+
               rte_prefetch0 (rte_pktmbuf_mtod (m, void *));
               l2fwd_simple_forward (m, in_portid);
             }
@@ -270,24 +280,17 @@ main (int argc, char **argv)
   signal (SIGINT, signal_handler);
   signal (SIGTERM, signal_handler);
 
-  /* struct rte_mempool* pktmbuf_pool0 = rte_pktmbuf_pool_create ("mbuf_pool0", NB_MBUF, */
-  /*  MEMPOOL_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, 0); */
-  /* if (pktmbuf_pool0 == NULL) */
-  /*  rte_exit (EXIT_FAILURE, "Cannot init mbuf pool %s\n", "mbuf_pool0"); */
-  for (size_t i=0; i<rte_socket_count(); i++) {
-#if 1
-    char str[128];
-    snprintf (str, sizeof (str), "mbuf_pool[%zd]", i);
-    pktmbuf_pool[i] = rte_pktmbuf_pool_create (str, NB_MBUF,
-      MEMPOOL_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, i);
-    if (pktmbuf_pool[i] == NULL)
-      rte_exit (EXIT_FAILURE, "Cannot init mbuf pool %s\n", str);
-    RTE_LOG (INFO, XELLICO, "create mempool %s\n", str);
-#else
-    pktmbuf_pool[i] = pktmbuf_pool0;
-#endif
-  }
   /* create the mbuf pool */
+  for (size_t i=0; i<rte_socket_count(); i++)
+    {
+      char str[128];
+      snprintf (str, sizeof (str), "mbuf_pool[%zd]", i);
+      pktmbuf_pool[i] = rte_pktmbuf_pool_create (str, NB_MBUF,
+        MEMPOOL_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, i);
+      if (pktmbuf_pool[i] == NULL)
+        rte_exit (EXIT_FAILURE, "Cannot init mbuf pool %s\n", str);
+      RTE_LOG (INFO, XELLICO, "create mempool %s\n", str);
+    }
 
   uint8_t nb_ports = rte_eth_dev_count ();
   if (nb_ports == 0)
@@ -327,15 +330,15 @@ main (int argc, char **argv)
   for (uint8_t portid = 0; portid < nb_ports; portid++)
     {
       const size_t nb_rxq = 2;
-      const size_t nb_txq = 2;
+      const size_t nb_txq = rte_lcore_count();
       printf("Initializing port %u... \n", (unsigned) portid);
       ret = rte_eth_dev_configure (portid, nb_rxq, nb_txq, &port_conf);
       if (ret < 0)
         rte_exit (EXIT_FAILURE, "Cannot configure device: err=%d, port=%u\n",
             ret, (unsigned) portid);
 
-      uint16_t nb_rxd = 1280; // TODO
-      uint16_t nb_txd = 5120; // TODO
+      uint16_t nb_rxd = 128;
+      uint16_t nb_txd = 512;
       ret = rte_eth_dev_adjust_nb_rx_tx_desc (portid, &nb_rxd, &nb_txd);
       if (ret < 0)
         rte_exit(EXIT_FAILURE,
@@ -356,9 +359,7 @@ main (int argc, char **argv)
         }
 
       /* init one TX queue on each port */
-      fflush (stdout); // TODO delete
-
-      for (uint32_t q=0; q<nb_rxq; q++)
+      for (uint32_t q=0; q<nb_txq; q++)
         {
           ret = rte_eth_tx_queue_setup (portid, q, nb_txd,
               rte_eth_dev_socket_id (portid), NULL);
