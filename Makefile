@@ -29,7 +29,6 @@
 #   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 #   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-RTE_SDK = /home/khwarizmi/dpdk
 ifeq ($(RTE_SDK),)
 $(error "Please define RTE_SDK environment variable")
 endif
@@ -48,6 +47,11 @@ include $(RTE_SDK)/mk/rte.extapp.mk
 
 run:
 	sudo ./build/xellico
+
+runt:
+	sudo ./build/xellico \
+		--vdev=net_tap0,iface=tap0 \
+		--vdev=net_tap1,iface=tap1
 
 gdb:
 	sudo gdb ./build/xellico

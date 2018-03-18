@@ -114,29 +114,25 @@ init_queue_conf (void)
         }
     }
 
-  lcore_queue_conf[0].n_rx_port = 2;
+  lcore_queue_conf[0].n_rx_port = 4;
   lcore_queue_conf[0].rx_port_queue_list[0].port_id  = 0;
   lcore_queue_conf[0].rx_port_queue_list[0].queue_id = 0;
   lcore_queue_conf[0].rx_port_queue_list[1].port_id  = 0;
   lcore_queue_conf[0].rx_port_queue_list[1].queue_id = 2;
+  lcore_queue_conf[0].rx_port_queue_list[2].port_id  = 0;
+  lcore_queue_conf[0].rx_port_queue_list[2].queue_id = 1;
+  lcore_queue_conf[0].rx_port_queue_list[3].port_id  = 0;
+  lcore_queue_conf[0].rx_port_queue_list[3].queue_id = 3;
 
-  lcore_queue_conf[1].n_rx_port = 2;
+  lcore_queue_conf[1].n_rx_port = 4;
   lcore_queue_conf[1].rx_port_queue_list[0].port_id  = 1;
   lcore_queue_conf[1].rx_port_queue_list[0].queue_id = 0;
   lcore_queue_conf[1].rx_port_queue_list[1].port_id  = 1;
   lcore_queue_conf[1].rx_port_queue_list[1].queue_id = 2;
-
-  lcore_queue_conf[2].n_rx_port = 2;
-  lcore_queue_conf[2].rx_port_queue_list[0].port_id  = 0;
-  lcore_queue_conf[2].rx_port_queue_list[0].queue_id = 1;
-  lcore_queue_conf[2].rx_port_queue_list[1].port_id  = 0;
-  lcore_queue_conf[2].rx_port_queue_list[1].queue_id = 3;
-
-  lcore_queue_conf[3].n_rx_port = 2;
-  lcore_queue_conf[3].rx_port_queue_list[0].port_id  = 1;
-  lcore_queue_conf[3].rx_port_queue_list[0].queue_id = 1;
-  lcore_queue_conf[3].rx_port_queue_list[1].port_id  = 1;
-  lcore_queue_conf[3].rx_port_queue_list[1].queue_id = 3;
+  lcore_queue_conf[1].rx_port_queue_list[2].port_id  = 1;
+  lcore_queue_conf[1].rx_port_queue_list[2].queue_id = 1;
+  lcore_queue_conf[1].rx_port_queue_list[3].port_id  = 1;
+  lcore_queue_conf[1].rx_port_queue_list[3].queue_id = 3;
 }
 
 static inline void
@@ -160,16 +156,18 @@ l2fwd_main_loop (void)
   if (qconf->n_rx_port == 0)
     {
       RTE_LOG (INFO, XELLICO, "lcore %u has nothing to do\n", lcore_id);
+#if 0
       if (lcore_id == 31)
         while (!force_quit)
           {
             printf("---\n");
-            dump_mempool(pktmbuf_pool[0]);
+            if (pktmbuf_pool[0]) dump_mempool(pktmbuf_pool[0]);
             printf("---\n");
-            dump_mempool(pktmbuf_pool[1]);
+            if (pktmbuf_pool[1]) dump_mempool(pktmbuf_pool[1]);
             printf("==============\n");
             sleep(1);
           }
+#endif
       return;
     }
 
