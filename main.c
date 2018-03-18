@@ -66,9 +66,9 @@ dump_queue_conf (struct lcore_queue_conf* qconf)
 {
   printf ("qconf@%p: n_rx_port=%u \n", qconf, qconf->n_rx_port);
   for (size_t j=0; j<qconf->n_rx_port; j++)
-  printf ("   port%u queue%u\n",
-      qconf->rx_port_queue_list[j].port_id,
-      qconf->rx_port_queue_list[j].queue_id);
+    printf ("   port%u queue%u\n",
+        qconf->rx_port_queue_list[j].port_id,
+        qconf->rx_port_queue_list[j].queue_id);
 }
 
 static void
