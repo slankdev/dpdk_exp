@@ -24,11 +24,16 @@
 static volatile bool force_quit;
 static uint32_t l2fwd_dst_ports[RTE_MAX_ETHPORTS];
 
+struct lcore_port_queue_list
+{
+  uint32_t port_id;
+  uint32_t queue_id;
+} __rte_cache_aligned;
+
 struct lcore_queue_conf
 {
   uint32_t n_rx_port;
-  uint32_t rx_port_list[MAX_RX_QUEUE_PER_LCORE];
-  uint32_t rx_queue_list[MAX_RX_QUEUE_PER_LCORE];
+  struct lcore_port_queue_list rx_port_queue_list[MAX_RX_QUEUE_PER_LCORE];
   struct rte_eth_dev_tx_buffer *tx_buffer[RTE_MAX_ETHPORTS];
 } __rte_cache_aligned;
 struct lcore_queue_conf lcore_queue_conf[RTE_MAX_LCORE];
@@ -59,11 +64,11 @@ struct rte_mempool* pktmbuf_pool[RTE_MAX_LCORE];
 static void
 dump_queue_conf (struct lcore_queue_conf* qconf)
 {
-  printf ("qconf: n_rx_port=%u \n", qconf->n_rx_port);
+  printf ("qconf@%p: n_rx_port=%u \n", qconf, qconf->n_rx_port);
   for (size_t j=0; j<qconf->n_rx_port; j++)
   printf ("   port%u queue%u\n",
-      qconf->rx_port_list[j],
-      qconf->rx_queue_list[j]);
+      qconf->rx_port_queue_list[j].port_id,
+      qconf->rx_port_queue_list[j].queue_id);
 }
 
 static void
@@ -110,28 +115,28 @@ init_queue_conf (void)
     }
 
   lcore_queue_conf[0].n_rx_port = 2;
-  lcore_queue_conf[0].rx_port_list[0] = 0;
-  lcore_queue_conf[0].rx_queue_list[0] = 0;
-  lcore_queue_conf[0].rx_port_list[1] = 0;
-  lcore_queue_conf[0].rx_queue_list[1] = 2;
+  lcore_queue_conf[0].rx_port_queue_list[0].port_id  = 0;
+  lcore_queue_conf[0].rx_port_queue_list[0].queue_id = 0;
+  lcore_queue_conf[0].rx_port_queue_list[1].port_id  = 0;
+  lcore_queue_conf[0].rx_port_queue_list[1].queue_id = 2;
 
   lcore_queue_conf[1].n_rx_port = 2;
-  lcore_queue_conf[1].rx_port_list[0] = 1;
-  lcore_queue_conf[1].rx_queue_list[0] = 0;
-  lcore_queue_conf[1].rx_port_list[1] = 1;
-  lcore_queue_conf[1].rx_queue_list[1] = 2;
+  lcore_queue_conf[1].rx_port_queue_list[0].port_id  = 1;
+  lcore_queue_conf[1].rx_port_queue_list[0].queue_id = 0;
+  lcore_queue_conf[1].rx_port_queue_list[1].port_id  = 1;
+  lcore_queue_conf[1].rx_port_queue_list[1].queue_id = 2;
 
   lcore_queue_conf[2].n_rx_port = 2;
-  lcore_queue_conf[2].rx_port_list[0] = 0;
-  lcore_queue_conf[2].rx_queue_list[0] = 1;
-  lcore_queue_conf[2].rx_port_list[1] = 0;
-  lcore_queue_conf[2].rx_queue_list[1] = 3;
+  lcore_queue_conf[2].rx_port_queue_list[0].port_id  = 0;
+  lcore_queue_conf[2].rx_port_queue_list[0].queue_id = 1;
+  lcore_queue_conf[2].rx_port_queue_list[1].port_id  = 0;
+  lcore_queue_conf[2].rx_port_queue_list[1].queue_id = 3;
 
   lcore_queue_conf[3].n_rx_port = 2;
-  lcore_queue_conf[3].rx_port_list[0] = 1;
-  lcore_queue_conf[3].rx_queue_list[0] = 1;
-  lcore_queue_conf[3].rx_port_list[1] = 1;
-  lcore_queue_conf[3].rx_queue_list[1] = 3;
+  lcore_queue_conf[3].rx_port_queue_list[0].port_id  = 1;
+  lcore_queue_conf[3].rx_port_queue_list[0].queue_id = 1;
+  lcore_queue_conf[3].rx_port_queue_list[1].port_id  = 1;
+  lcore_queue_conf[3].rx_port_queue_list[1].queue_id = 3;
 }
 
 static inline void
@@ -172,8 +177,8 @@ l2fwd_main_loop (void)
 
   for (size_t i = 0; i < qconf->n_rx_port; i++)
     {
-      unsigned portid = qconf->rx_port_list[i];
-      unsigned queueid = qconf->rx_queue_list[i];
+      unsigned portid = qconf->rx_port_queue_list[i].port_id;
+      unsigned queueid = qconf->rx_port_queue_list[i].queue_id;
       RTE_LOG (INFO, XELLICO,
           " -- lcoreid=%u portid=%u queueid=%u\n",
           lcore_id, portid, queueid);
@@ -196,7 +201,7 @@ l2fwd_main_loop (void)
         {
           for (size_t i = 0; i < qconf->n_rx_port; i++)
             {
-              uint32_t dst_portid = l2fwd_dst_ports[qconf->rx_port_list[i]];
+              uint32_t dst_portid = l2fwd_dst_ports[qconf->rx_port_queue_list[i].port_id];
               uint32_t dst_queueid = rte_lcore_id();
               struct rte_eth_dev_tx_buffer *buffer = qconf->tx_buffer[dst_portid];
               rte_eth_tx_buffer_flush (dst_portid, dst_queueid, buffer);
@@ -210,8 +215,8 @@ l2fwd_main_loop (void)
       for (size_t i = 0; i < qconf->n_rx_port; i++)
         {
           struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
-          uint32_t in_portid = qconf->rx_port_list[i];
-          uint32_t in_queueid = qconf->rx_queue_list[i];
+          uint32_t in_portid = qconf->rx_port_queue_list[i].port_id;
+          uint32_t in_queueid = qconf->rx_port_queue_list[i].queue_id;
           unsigned nb_rx = rte_eth_rx_burst ((uint8_t) in_portid,
               in_queueid, pkts_burst, MAX_PKT_BURST);
 
